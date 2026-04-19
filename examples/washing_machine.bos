@@ -1,0 +1,26 @@
+machine_id = "WASH_01"
+print "--- Washing Machine System Started ---"
+
+// จำลองการต่อเน็ตและ MQTT ส่งสถานะ
+mqtt_connect "broker.hivemq.com"
+mqtt_pub "bos/wash/status" "STARTING"
+
+// เปิดวาล์วน้ำเข้า (สมมติว่าต่ออยู่กับ Pin 4)
+print "Step 1: Water Intake"
+pin_on 4
+delay 3000 // จำลองการรอน้ำเต็ม 3 วินาที
+
+// ปิดวาล์วน้ำ
+pin_off 4
+print "Water is Full."
+
+// สั่งมอเตอร์ซักทำงาน (สมมติว่าต่ออยู่กับ Pin 5)
+print "Step 2: Washing..."
+pin_on 5
+delay 5000 // ซัก 5 วินาที
+pin_off 5
+
+// ส่งสถานะทำงานเสร็จ
+print "Task Completed!"
+mqtt_pub "bos/wash/status" "FINISHED"
+
