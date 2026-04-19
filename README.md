@@ -16,3 +16,20 @@ It provides seamless hardware control, built-in networking, and an intuitive syn
 git clone [https://github.com/xbosshu/bos-lang.git](https://github.com/xbosshu/bos-lang.git)
 cd bos-lang
 pip install -e .
+
+# Example: Vending Machine Logic
+machine_id = "VEND_01"
+display_init 18 19
+display_num 0
+
+print "Waiting for Button (Pin 12)..."
+wait_btn 12 btn_status
+
+print "Dispensing..."
+pin_on 4
+delay 2000
+pin_off 4
+
+mqtt_connect "broker.hivemq.com"
+mqtt_pub "bos/vending/sale" "SUCCESS"
+display_num 1
