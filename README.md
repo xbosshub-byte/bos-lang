@@ -16,6 +16,7 @@ It provides seamless hardware control, built-in networking, and an intuitive syn
 git clone [https://github.com/xbosshu/bos-lang.git](https://github.com/xbosshu/bos-lang.git)
 cd bos-lang
 pip install -e .
+```
 
 # Example: Vending Machine Logic
 machine_id = "VEND_01"
