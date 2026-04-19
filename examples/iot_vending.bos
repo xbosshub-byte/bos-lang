@@ -1,0 +1,34 @@
+// 1. Setup อุปกรณ์
+machine_id = "VEND_BOSS_01"
+print "System Starting..."
+
+// 2. การเชื่อมต่อ Network (SSID, Password)
+wifi_connect "MyHome_WiFi" "12345678"
+
+// 3. เชื่อมต่อ MQTT Broker
+mqtt_connect "broker.hivemq.com"
+
+// 4. วนลูปทำงานหลัก
+loop_count = 0
+
+while loop_count < 5 {
+    // อ่านค่า Sensor จาก Pin 34 (จำลองบน PC)
+    read_sensor temp 34
+    
+    print "Current Temperature:"
+    print temp
+    
+    // ส่งข้อมูลเข้า Dashboard ผ่าน MQTT
+    mqtt_pub "bos/vending/temp" temp
+    
+    if temp > 28 {
+        print "Warning: Machine too hot!"
+        mqtt_pub "bos/vending/alert" "OVERHEAT"
+    }
+
+    loop_count = loop_count + 1
+    delay 2000 // รอ 2 วินาที
+}
+
+print "Task Completed"
+
