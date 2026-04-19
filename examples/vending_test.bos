@@ -1,1 +1,13 @@
+status = "ONLINE"
+print status
 
+coin = 20
+
+if coin > 15 {
+    print "Payment Success"
+    api_send "DISPENSE_WATER_01"
+}
+
+if coin < 15 {
+    print "Not enough money"
+}
