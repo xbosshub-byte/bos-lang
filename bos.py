@@ -1,52 +1,59 @@
 import sys
 import re
+import time
+import random
 
-class BOSLexer:
-    def __init__(self, code):
-        self.code = code
-        self.tokens = []
-        self.tokenize()
+# ==========================================
+# 1. ระบบตรวจจับแพลตฟอร์ม (Auto-Detect)
+# ==========================================
+SYS_PLATFORM = sys.platform
+HW_MODE = "MOCK"   # MOCK, MICROPYTHON, RPI
+NET_MODE = "MOCK"  # MOCK, MICROPYTHON, PAHO
 
-    def tokenize(self):
-        # เพิ่มคีย์เวิร์ด while เข้ามา
-        keywords = {'if', 'while', 'print', 'api_send', 'mqtt_pub'}
-        rules = [
-            ('STRING',   r'"[^"]*"'),
-            ('NUMBER',   r'\d+'),
-            ('EQ',       r'=='),
-            ('ASSIGN',   r'='),
-            ('PLUS',     r'\+'),              # เพิ่มเครื่องหมายบวก
-            ('GT',       r'>'),
-            ('LT',       r'<'),
-            ('LBRACE',   r'\{'),
-            ('RBRACE',   r'\}'),
-            ('ID',       r'[A-Za-z_]\w*'),
-            ('NEWLINE',  r'\n'),
-            ('SKIP',     r'[ \t]+'),
-            ('MISMATCH', r'.'),
-        ]
+# กรณีเป็นบอร์ด Microcontroller (ESP32, Raspberry Pi Pico)
+if SYS_PLATFORM in ['esp32', 'rp2']:
+    HW_MODE = "MICROPYTHON"
+    try:
+        from machine import ADC, Pin
+    except ImportError:
+        pass
+    try:
+        import network
+        from umqtt.simple import MQTTClient
+        NET_MODE = "MICROPYTHON"
+    except ImportError:
+        pass # กรณีเป็นบอร์ด Pico ธรรมดาที่ไม่มี Wi-Fi
+
+# กรณีเป็น PC, Server หรือ Raspberry Pi 5 (Windows, Linux, Mac)
+else:
+    # ตรวจสอบว่าลงไลบรารี MQTT ของ PC ไว้หรือไม่ (pip install paho-mqtt)
+    try:
+        import paho.mqtt.client as mqtt_client
+        NET_MODE = "PAHO"
+    except ImportError:
+        pass
         
-        tok_regex = '|'.join('(?P<%s>%s)' % pair for pair in rules)
-        for mo in re.finditer(tok_regex, self.code):
-            kind = mo.lastgroup
-            value = mo.group()
-            
-            if kind in ('SKIP', 'NEWLINE'):
-                continue
-            elif kind == 'MISMATCH':
-                raise RuntimeError(f'[Syntax Error] สัญลักษณ์ที่ไม่ได้รับอนุญาต: "{value}"')
-            elif kind == 'ID' and value in keywords:
-                kind = value.upper()
-                
-            self.tokens.append((kind, value))
+    # ตรวจสอบว่าเป็น Raspberry Pi หรือไม่ (เช็คจากไลบรารี GPIO)
+    try:
+        import RPi.GPIO as GPIO
+        GPIO.setwarnings(False)
+        GPIO.setmode(GPIO.BCM)
+        HW_MODE = "RPI"
+    except ImportError:
+        pass
 
+# ==========================================
+# 2. ระบบประมวลผล (Interpreter)
+# ==========================================
 class BOSInterpreter:
     def __init__(self):
         self.env = {}
-        self.loop_stack = [] # Stack สำหรับจำตำแหน่งเริ่มต้นของ Loop
+        self.loop_stack = []
+        self.mqtt = None
+        self.wifi = None
+        self.env['SYS_PLATFORM'] = SYS_PLATFORM # เก็บชื่อระบบไว้ให้เรียกใช้ในโค้ดได้
 
     def _get_val(self, token):
-        """ตัวช่วยดึงข้อมูล ไม่ว่าจะเป็น ตัวเลข ข้อความ หรือ ค่าในตัวแปร"""
         if token[0] == 'NUMBER': return int(token[1])
         elif token[0] == 'STRING': return token[1].strip('"')
         elif token[0] == 'ID': return self.env.get(token[1], 0)
@@ -58,87 +65,152 @@ class BOSInterpreter:
             if i >= len(tokens): break
             kind, value = tokens[i]
 
-            # 1. การกำหนดค่า (เช่น coin = 10 หรือ coin = coin + 5)
             if kind == 'ID' and i + 1 < len(tokens) and tokens[i+1][0] == 'ASSIGN':
                 var_name = value
-                
-                # เช็คว่าเป็นการบวกเลขหรือไม่ (เช่น coin = coin + 5)
                 if i + 3 < len(tokens) and tokens[i+3][0] == 'PLUS':
-                    val1 = self._get_val(tokens[i+2])
-                    val2 = self._get_val(tokens[i+4])
-                    self.env[var_name] = val1 + val2
+                    self.env[var_name] = self._get_val(tokens[i+2]) + self._get_val(tokens[i+4])
                     i += 5
                 else:
                     self.env[var_name] = self._get_val(tokens[i+2])
                     i += 3
 
-            # 2. คำสั่งแสดงผล
             elif kind == 'PRINT':
-                print(self._get_val(tokens[i+1]))
+                print(f"[BOS]: {self._get_val(tokens[i+1])}")
                 i += 2
 
-            # 3. คำสั่ง MQTT
-            elif kind == 'MQTT_PUB':
-                topic = self._get_val(tokens[i+1])
-                msg = self._get_val(tokens[i+2])
-                print(f"[MQTT Action] >> Topic: '{topic}' | Data: '{msg}'")
+            elif kind == 'DELAY':
+                time.sleep(self._get_val(tokens[i+1]) / 1000)
+                i += 2
+
+            # --- จัดการ Wi-Fi ---
+            elif kind == 'WIFI_CONNECT':
+                ssid = self._get_val(tokens[i+1])
+                pwd = self._get_val(tokens[i+2])
+                print(f"[WIFI]: กำลังเชื่อมต่อ {ssid}...")
+                
+                if NET_MODE == "MICROPYTHON":
+                    self.wifi = network.WLAN(network.STA_IF)
+                    self.wifi.active(True)
+                    self.wifi.connect(ssid, pwd)
+                    while not self.wifi.isconnected():
+                        pass
+                    print("[WIFI]: เชื่อมต่อสำเร็จ (MicroPython)")
+                else:
+                    print(f"[WIFI]: แพลตฟอร์ม {SYS_PLATFORM} จัดการอินเทอร์เน็ตผ่าน OS โดยตรง (Mock Connected)")
                 i += 3
 
-            # 4. เงื่อนไข IF และ WHILE
+            # --- จัดการ MQTT ---
+            elif kind == 'MQTT_CONNECT':
+                broker = self._get_val(tokens[i+1])
+                client_id = self.env.get('machine_id', f'BOS_{random.randint(1000,9999)}')
+                print(f"[MQTT]: เชื่อมต่อ {broker}...")
+                
+                if NET_MODE == "PAHO":
+                    self.mqtt = mqtt_client.Client(client_id)
+                    self.mqtt.connect(broker, 1883)
+                    self.mqtt.loop_start()
+                    print("[MQTT]: เชื่อมต่อสำเร็จ (PAHO-PC/Linux)")
+                elif NET_MODE == "MICROPYTHON":
+                    self.mqtt = MQTTClient(client_id, broker)
+                    self.mqtt.connect()
+                    print("[MQTT]: เชื่อมต่อสำเร็จ (umqtt-ESP32/PicoW)")
+                else:
+                    print("[MQTT]: ไม่พบไลบรารี MQTT กำลังทำงานในโหมด Mock")
+                i += 2
+
+            elif kind == 'MQTT_PUB':
+                topic = self._get_val(tokens[i+1])
+                msg = str(self._get_val(tokens[i+2]))
+                if self.mqtt:
+                    if NET_MODE == "PAHO": 
+                        self.mqtt.publish(topic, msg)
+                    elif NET_MODE == "MICROPYTHON": 
+                        self.mqtt.publish(topic.encode(), msg.encode())
+                print(f"[MQTT PUB]: {topic} -> {msg}")
+                i += 3
+
+            # --- จัดการ Sensor / GPIO ---
+            elif kind == 'READ_SENSOR':
+                var_name = tokens[i+1][1]
+                pin = self._get_val(tokens[i+2])
+                
+                if HW_MODE == "MICROPYTHON":
+                    # ใช้ ADC อ่านค่า Analog แบบ 16-bit
+                    adc = ADC(Pin(pin))
+                    if SYS_PLATFORM == 'esp32': adc.atten(ADC.ATTN_11V) # ตั้งค่าแรงดัน ESP32
+                    val = adc.read_u16() 
+                elif HW_MODE == "RPI":
+                    # Raspberry Pi อ่านค่า Digital 
+                    GPIO.setup(pin, GPIO.IN)
+                    val = GPIO.input(pin)
+                else:
+                    # โหมดจำลองบน PC
+                    val = random.randint(100, 999)
+                
+                self.env[var_name] = val
+                print(f"[SENSOR]: อ่านค่า Pin {pin} ได้ {val}")
+                i += 3
+
             elif kind in ('IF', 'WHILE'):
-                start_idx = i # จำตำแหน่งเริ่มต้นไว้เผื่อต้องวนลูปกลับมา
+                start_idx = i
                 var_name = tokens[i+1][1]
                 op = tokens[i+2][0]
                 compare_val = int(tokens[i+3][1])
-                
                 i += 4 
-                if i < len(tokens) and tokens[i][0] == 'LBRACE': 
-                    i += 1 
-                    
-                current_val = self.env.get(var_name, 0)
-                condition_met = False
+                if i < len(tokens) and tokens[i][0] == 'LBRACE': i += 1 
                 
-                if op == 'GT': condition_met = current_val > compare_val
-                elif op == 'LT': condition_met = current_val < compare_val
-                elif op == 'EQ': condition_met = current_val == compare_val
+                curr = self.env.get(var_name, 0)
+                cond = False
+                if op == 'GT': cond = curr > compare_val
+                elif op == 'LT': cond = curr < compare_val
+                elif op == 'EQ': cond = curr == compare_val
 
-                if condition_met:
-                    if kind == 'WHILE':
-                        self.loop_stack.append(start_idx) # เก็บตำแหน่งเพื่อวนกลับ
-                    # ทำงานบรรทัดถัดไปในบล็อกตามปกติ
+                if cond:
+                    if kind == 'WHILE': self.loop_stack.append(start_idx)
                 else:
-                    # ถ้าเงื่อนไขเป็นเท็จ ให้ข้ามไปหาปีกกาปิด }
-                    brace_count = 1
-                    while i < len(tokens) and brace_count > 0:
-                        if tokens[i][0] == 'LBRACE': brace_count += 1
-                        elif tokens[i][0] == 'RBRACE': brace_count -= 1
+                    braces = 1
+                    while i < len(tokens) and braces > 0:
+                        if tokens[i][0] == 'LBRACE': braces += 1
+                        elif tokens[i][0] == 'RBRACE': braces -= 1
                         i += 1
             
-            # 5. ปีกกาปิด }
             elif kind == 'RBRACE':
-                if self.loop_stack:
-                    i = self.loop_stack.pop() # วนลูปกลับไปเช็คเงื่อนไข WHILE ใหม่
-                else:
-                    i += 1
-            else:
-                i += 1
+                if self.loop_stack: i = self.loop_stack.pop()
+                else: i += 1
+            else: i += 1
 
-def run_file(filepath):
+# ==========================================
+# 3. ตัวแยกคำสั่ง (Lexer) และจุดเริ่มโปรแกรม
+# ==========================================
+class BOSLexer:
+    def __init__(self, code):
+        self.tokens = []
+        keywords = {'if', 'while', 'print', 'wifi_connect', 'mqtt_connect', 'mqtt_pub', 'read_sensor', 'delay'}
+        rules = [
+            ('STRING', r'"[^"]*"'), ('NUMBER', r'\d+'), ('EQ', r'=='), ('ASSIGN', r'='),
+            ('PLUS', r'\+'), ('GT', r'>'), ('LT', r'<'), ('LBRACE', r'\{'), ('RBRACE', r'\}'),
+            ('ID', r'[A-Za-z_]\w*'), ('NEWLINE', r'\n'), ('SKIP', r'[ \t]+'), ('MISMATCH', r'.'),
+        ]
+        tok_regex = '|'.join('(?P<%s>%s)' % pair for pair in rules)
+        for mo in re.finditer(tok_regex, code):
+            kind = mo.lastgroup
+            val = mo.group()
+            if kind in ('SKIP', 'NEWLINE'): continue
+            if kind == 'ID' and val in keywords: kind = val.upper()
+            self.tokens.append((kind, val))
+
+def main():
+    if len(sys.argv) < 2:
+        print("BOS Pro v2.1 (Cross-Platform Edition)")
+        print("รองรับ: ESP32, Pico, Raspberry Pi, Windows, Linux")
+        print("วิธีใช้: bos <file.bos>")
+        return
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            code = f.read()
-        
-        lexer = BOSLexer(code)
-        interpreter = BOSInterpreter()
-        interpreter.execute(lexer.tokens)
-        
-    except FileNotFoundError:
-        print(f"Error: ไม่พบไฟล์ '{filepath}'")
+        with open(sys.argv[1], 'r', encoding='utf-8') as f:
+            lexer = BOSLexer(f.read())
+        BOSInterpreter().execute(lexer.tokens)
     except Exception as e:
-        print(f"Runtime Error: {e}")
+        print(f"Error: {e}")
 
 if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print("Usage: python bos.py <file.bos>")
-    else:
-        run_file(sys.argv[1])
+    main()
