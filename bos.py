@@ -7,10 +7,9 @@ import random
 # 1. ระบบตรวจจับแพลตฟอร์ม (Auto-Detect)
 # ==========================================
 SYS_PLATFORM = sys.platform
-HW_MODE = "MOCK"   # MOCK, MICROPYTHON, RPI
-NET_MODE = "MOCK"  # MOCK, MICROPYTHON, PAHO
+HW_MODE = "MOCK"   
+NET_MODE = "MOCK"  
 
-# กรณีเป็นบอร์ด Microcontroller (ESP32, Raspberry Pi Pico)
 if SYS_PLATFORM in ['esp32', 'rp2']:
     HW_MODE = "MICROPYTHON"
     try:
@@ -22,18 +21,13 @@ if SYS_PLATFORM in ['esp32', 'rp2']:
         from umqtt.simple import MQTTClient
         NET_MODE = "MICROPYTHON"
     except ImportError:
-        pass # กรณีเป็นบอร์ด Pico ธรรมดาที่ไม่มี Wi-Fi
-
-# กรณีเป็น PC, Server หรือ Raspberry Pi 5 (Windows, Linux, Mac)
+        pass 
 else:
-    # ตรวจสอบว่าลงไลบรารี MQTT ของ PC ไว้หรือไม่ (pip install paho-mqtt)
     try:
         import paho.mqtt.client as mqtt_client
         NET_MODE = "PAHO"
     except ImportError:
         pass
-        
-    # ตรวจสอบว่าเป็น Raspberry Pi หรือไม่ (เช็คจากไลบรารี GPIO)
     try:
         import RPi.GPIO as GPIO
         GPIO.setwarnings(False)
@@ -51,7 +45,7 @@ class BOSInterpreter:
         self.loop_stack = []
         self.mqtt = None
         self.wifi = None
-        self.env['SYS_PLATFORM'] = SYS_PLATFORM # เก็บชื่อระบบไว้ให้เรียกใช้ในโค้ดได้
+        self.env['SYS_PLATFORM'] = SYS_PLATFORM 
 
     def _get_val(self, token):
         if token[0] == 'NUMBER': return int(token[1])
@@ -82,75 +76,76 @@ class BOSInterpreter:
                 time.sleep(self._get_val(tokens[i+1]) / 1000)
                 i += 2
 
-            # --- จัดการ Wi-Fi ---
+            # --- จัดการ Wi-Fi และ MQTT ---
             elif kind == 'WIFI_CONNECT':
                 ssid = self._get_val(tokens[i+1])
                 pwd = self._get_val(tokens[i+2])
                 print(f"[WIFI]: กำลังเชื่อมต่อ {ssid}...")
-                
                 if NET_MODE == "MICROPYTHON":
                     self.wifi = network.WLAN(network.STA_IF)
                     self.wifi.active(True)
                     self.wifi.connect(ssid, pwd)
-                    while not self.wifi.isconnected():
-                        pass
-                    print("[WIFI]: เชื่อมต่อสำเร็จ (MicroPython)")
+                    while not self.wifi.isconnected(): pass
+                    print("[WIFI]: เชื่อมต่อสำเร็จ")
                 else:
-                    print(f"[WIFI]: แพลตฟอร์ม {SYS_PLATFORM} จัดการอินเทอร์เน็ตผ่าน OS โดยตรง (Mock Connected)")
+                    print(f"[WIFI]: แจำลองการเชื่อมต่อบน {SYS_PLATFORM}")
                 i += 3
 
-            # --- จัดการ MQTT ---
             elif kind == 'MQTT_CONNECT':
                 broker = self._get_val(tokens[i+1])
                 client_id = self.env.get('machine_id', f'BOS_{random.randint(1000,9999)}')
-                print(f"[MQTT]: เชื่อมต่อ {broker}...")
-                
                 if NET_MODE == "PAHO":
                     self.mqtt = mqtt_client.Client(client_id)
                     self.mqtt.connect(broker, 1883)
                     self.mqtt.loop_start()
-                    print("[MQTT]: เชื่อมต่อสำเร็จ (PAHO-PC/Linux)")
                 elif NET_MODE == "MICROPYTHON":
                     self.mqtt = MQTTClient(client_id, broker)
                     self.mqtt.connect()
-                    print("[MQTT]: เชื่อมต่อสำเร็จ (umqtt-ESP32/PicoW)")
-                else:
-                    print("[MQTT]: ไม่พบไลบรารี MQTT กำลังทำงานในโหมด Mock")
+                print(f"[MQTT]: เชื่อมต่อ {broker} สำเร็จ")
                 i += 2
 
             elif kind == 'MQTT_PUB':
                 topic = self._get_val(tokens[i+1])
                 msg = str(self._get_val(tokens[i+2]))
                 if self.mqtt:
-                    if NET_MODE == "PAHO": 
-                        self.mqtt.publish(topic, msg)
-                    elif NET_MODE == "MICROPYTHON": 
-                        self.mqtt.publish(topic.encode(), msg.encode())
+                    if NET_MODE == "PAHO": self.mqtt.publish(topic, msg)
+                    elif NET_MODE == "MICROPYTHON": self.mqtt.publish(topic.encode(), msg.encode())
                 print(f"[MQTT PUB]: {topic} -> {msg}")
                 i += 3
 
-            # --- จัดการ Sensor / GPIO ---
+            # --- จัดการ Sensor / GPIO (Input/Output) ---
             elif kind == 'READ_SENSOR':
                 var_name = tokens[i+1][1]
                 pin = self._get_val(tokens[i+2])
-                
                 if HW_MODE == "MICROPYTHON":
-                    # ใช้ ADC อ่านค่า Analog แบบ 16-bit
                     adc = ADC(Pin(pin))
-                    if SYS_PLATFORM == 'esp32': adc.atten(ADC.ATTN_11V) # ตั้งค่าแรงดัน ESP32
+                    if SYS_PLATFORM == 'esp32': adc.atten(ADC.ATTN_11V)
                     val = adc.read_u16() 
                 elif HW_MODE == "RPI":
-                    # Raspberry Pi อ่านค่า Digital 
                     GPIO.setup(pin, GPIO.IN)
                     val = GPIO.input(pin)
                 else:
-                    # โหมดจำลองบน PC
-                    val = random.randint(100, 999)
-                
+                    val = random.randint(100, 999) # โหมดจำลอง
                 self.env[var_name] = val
                 print(f"[SENSOR]: อ่านค่า Pin {pin} ได้ {val}")
                 i += 3
 
+            elif kind in ('PIN_ON', 'PIN_OFF'):
+                pin_num = self._get_val(tokens[i+1])
+                state = 1 if kind == 'PIN_ON' else 0
+                
+                if HW_MODE == "MICROPYTHON":
+                    p = Pin(pin_num, Pin.OUT)
+                    p.value(state)
+                elif HW_MODE == "RPI":
+                    GPIO.setup(pin_num, GPIO.OUT)
+                    GPIO.output(pin_num, state)
+                
+                status_text = "เปิด (ON)" if state == 1 else "ปิด (OFF)"
+                print(f"[OUTPUT]: สั่งการ Pin {pin_num} -> {status_text}")
+                i += 2
+
+            # --- จัดการ Control Flow ---
             elif kind in ('IF', 'WHILE'):
                 start_idx = i
                 var_name = tokens[i+1][1]
@@ -180,12 +175,12 @@ class BOSInterpreter:
             else: i += 1
 
 # ==========================================
-# 3. ตัวแยกคำสั่ง (Lexer) และจุดเริ่มโปรแกรม
+# 3. ตัวแยกคำสั่ง (Lexer)
 # ==========================================
 class BOSLexer:
     def __init__(self, code):
         self.tokens = []
-        keywords = {'if', 'while', 'print', 'wifi_connect', 'mqtt_connect', 'mqtt_pub', 'read_sensor', 'delay'}
+        keywords = {'if', 'while', 'print', 'wifi_connect', 'mqtt_connect', 'mqtt_pub', 'read_sensor', 'delay', 'pin_on', 'pin_off'}
         rules = [
             ('STRING', r'"[^"]*"'), ('NUMBER', r'\d+'), ('EQ', r'=='), ('ASSIGN', r'='),
             ('PLUS', r'\+'), ('GT', r'>'), ('LT', r'<'), ('LBRACE', r'\{'), ('RBRACE', r'\}'),
@@ -201,8 +196,7 @@ class BOSLexer:
 
 def main():
     if len(sys.argv) < 2:
-        print("BOS Pro v2.1 (Cross-Platform Edition)")
-        print("รองรับ: ESP32, Pico, Raspberry Pi, Windows, Linux")
+        print("BOS Pro v2.2 (Hardware Control Edition)")
         print("วิธีใช้: bos <file.bos>")
         return
     try:
