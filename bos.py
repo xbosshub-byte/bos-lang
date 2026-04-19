@@ -2,12 +2,15 @@ import sys
 import re
 import time
 import random
+import os
 
+# ==========================================
+# 1. ระบบตรวจจับแพลตฟอร์ม & โหลด Library
+# ==========================================
 SYS_PLATFORM = sys.platform
 HW_MODE = "MOCK"   
 NET_MODE = "MOCK"  
 
-# ตรวจสอบ MicroPython (ESP32 / Pico)
 if SYS_PLATFORM in ['esp32', 'rp2']:
     HW_MODE = "MICROPYTHON"
     try:
@@ -16,7 +19,6 @@ if SYS_PLATFORM in ['esp32', 'rp2']:
         from umqtt.simple import MQTTClient
         NET_MODE = "MICROPYTHON"
     except ImportError: pass 
-# ตรวจสอบ PC / Raspberry Pi
 else:
     try:
         import paho.mqtt.client as mqtt_client
@@ -24,9 +26,16 @@ else:
     except ImportError: pass
     try:
         import RPi.GPIO as GPIO
-        # โหลดไลบรารี TM1637 สำหรับ Pi 5 จากไฟล์ tm1637_display.py ของคุณ
-        import tm1637_display as rpi_tm1637 
         HW_MODE = "RPI"
+        
+        # ระบบ Auto-Download สำหรับ Pi 5 ดึงไลบรารีจาก BOSSHUB 
+        if not os.path.exists("tm1637_display.py"):
+            print("[SYSTEM]: ไม่พบ tm1637_display.py กำลังดาวน์โหลดจาก BOSSHUB...")
+            import urllib.request
+            urllib.request.urlretrieve("https://ide.bosshub.io/libs/admin/tm1637_display.py", "tm1637_display.py")
+            print("[SYSTEM]: ดาวน์โหลดไลบรารีสำเร็จ!")
+            
+        import tm1637_display as rpi_tm1637 
     except ImportError: pass
 
 # ==========================================
@@ -66,6 +75,37 @@ class BOSInterpreter:
                 time.sleep(self._get_val(tokens[i+1]) / 1000)
                 i += 2
 
+            # --- [User Input (POS & Vending)] ---
+            elif kind == 'INPUT':
+                var_name = tokens[i+1][1]
+                prompt = self._get_val(tokens[i+2])
+                if HW_MODE in ("MOCK", "RPI"):
+                    val = input(f"{prompt} ") # รอรับค่าจาก Keyboard/Barcode Scanner
+                    try: val = int(val) # แปลงเป็นตัวเลขถ้าทำได้
+                    except ValueError: pass
+                    self.env[var_name] = val
+                else:
+                    self.env[var_name] = 1 # โหมดจำลองสำหรับบอร์ดที่ไม่มีคีย์บอร์ด
+                i += 3
+                
+            elif kind == 'WAIT_BTN':
+                pin = self._get_val(tokens[i+1])
+                var_name = tokens[i+2][1]
+                print(f"[HARDWARE]: กรุณากดปุ่มที่ Pin {pin}...")
+                
+                if HW_MODE == "MICROPYTHON":
+                    btn = Pin(pin, Pin.IN, Pin.PULL_UP)
+                    while btn.value() == 1: time.sleep(0.1) # รอจนกว่าจะมีการกด (Active Low)
+                elif HW_MODE == "RPI":
+                    GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+                    while GPIO.input(pin) == GPIO.HIGH: time.sleep(0.1)
+                else:
+                    input("[MOCK]: กด Enter เพื่อจำลองการกดปุ่มฮาร์ดแวร์...")
+                
+                self.env[var_name] = 1 # กำหนดค่าให้ตัวแปรว่าถูกกดแล้ว
+                print(f"[HARDWARE]: ปุ่ม Pin {pin} ถูกกดแล้ว!")
+                i += 3
+
             # --- [Network & MQTT] ---
             elif kind == 'WIFI_CONNECT':
                 ssid, pwd = self._get_val(tokens[i+1]), self._get_val(tokens[i+2])
@@ -88,14 +128,13 @@ class BOSInterpreter:
                 if self.mqtt:
                     if NET_MODE == "PAHO": self.mqtt.publish(t, m)
                     elif NET_MODE == "MICROPYTHON": self.mqtt.publish(t.encode(), m.encode())
-                print(f"[MQTT PUB]: {t} -> {m}")
                 i += 3
 
             # --- [TM1637 Display Control] ---
             elif kind == 'DISPLAY_INIT':
                 clk, dio = self._get_val(tokens[i+1]), self._get_val(tokens[i+2])
                 if HW_MODE == "MICROPYTHON":
-                    import tm1637
+                    import tm1637 
                     self.display = tm1637.TM1637(clk=Pin(clk), dio=Pin(dio))
                 elif HW_MODE == "RPI":
                     self.display = rpi_tm1637.TM1637(clk=clk, dio=dio)
@@ -106,22 +145,18 @@ class BOSInterpreter:
                 if self.display:
                     if HW_MODE == "MICROPYTHON": self.display.number(int(val))
                     elif HW_MODE == "RPI": self.display.number(int(val))
-                print(f"[DISPLAY SHOW]: {val}")
                 i += 2
 
             # --- [Hardware IO] ---
             elif kind == 'READ_SENSOR':
                 v, p = tokens[i+1][1], self._get_val(tokens[i+2])
                 self.env[v] = ADC(Pin(p)).read_u16() if HW_MODE == "MICROPYTHON" else random.randint(10, 50)
-                print(f"[SENSOR]: Read Pin {p} -> {self.env[v]}")
                 i += 3
             elif kind in ('PIN_ON', 'PIN_OFF'):
                 p, s = self._get_val(tokens[i+1]), (1 if kind == 'PIN_ON' else 0)
                 if HW_MODE == "MICROPYTHON": Pin(p, Pin.OUT).value(s)
                 elif HW_MODE == "RPI": 
                     GPIO.setup(p, GPIO.OUT); GPIO.output(p, s)
-                status_text = "ON" if s == 1 else "OFF"
-                print(f"[OUTPUT]: สั่งการ Pin {p} -> {status_text}")
                 i += 2
 
             # --- [Control Flow] ---
@@ -150,7 +185,7 @@ class BOSInterpreter:
 class BOSLexer:
     def __init__(self, code):
         self.tokens = []
-        kw = {'if', 'while', 'print', 'wifi_connect', 'mqtt_connect', 'mqtt_pub', 'read_sensor', 'delay', 'pin_on', 'pin_off', 'display_init', 'display_num'}
+        kw = {'if', 'while', 'print', 'wifi_connect', 'mqtt_connect', 'mqtt_pub', 'read_sensor', 'delay', 'pin_on', 'pin_off', 'display_init', 'display_num', 'input', 'wait_btn'}
         rules = [
             ('STRING', r'"[^"]*"'), ('NUMBER', r'\d+'), ('EQ', r'=='), ('ASSIGN', r'='),
             ('PLUS', r'\+'), ('GT', r'>'), ('LT', r'<'), ('LBRACE', r'\{'), ('RBRACE', r'\}'),
@@ -165,7 +200,7 @@ class BOSLexer:
 
 def main():
     if len(sys.argv) < 2: 
-        print("BOS Pro v2.4 (Custom Libs Edition)")
+        print("BOS Pro v2.5 (POS & Vending Input Edition)")
         print("วิธีใช้: bos <file.bos>")
         return
     try:
