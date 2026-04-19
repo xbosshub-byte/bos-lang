@@ -1,13 +1,14 @@
-status = "ONLINE"
-print status
+price = 20
+coin = 0
 
-coin = 20
+print "--- VENDING MACHINE ONLINE ---"
+mqtt_pub "machine_01/status" "READY"
 
-if coin > 15 {
-    print "Payment Success"
-    api_send "DISPENSE_WATER_01"
+while coin < price {
+    print "Insert more coin..."
+    // จำลองการหยอดเหรียญเพิ่มทีละ 5 บาท
+    coin = coin + 5
 }
 
-if coin < 15 {
-    print "Not enough money"
-}
+print "Payment Success!"
+mqtt_pub "machine_01/dispense" "WATER"
