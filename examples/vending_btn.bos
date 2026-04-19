@@ -1,0 +1,21 @@
+machine_id = "VEND_MACHINE_01"
+print "--- Vending Machine Ready ---"
+
+// แสดงเลข 0 ที่หน้าจอก่อน
+display_init 18 19
+display_num 0
+
+print "Waiting for user to press Select Button (Pin 12)..."
+
+// ระบบจะหยุดรอจนกว่า Pin 12 จะถูกกด (ลงกราวด์)
+wait_btn 12 btn_status
+
+print "Button Pressed! Dispensing Product..."
+display_num 1
+
+pin_on 4
+delay 2000
+pin_off 4
+
+print "Thank you!"
+
