@@ -19,6 +19,7 @@ pip install -e .
 ```
 
 # Example: Vending Machine Logic
+```
 machine_id = "VEND_01"
 display_init 18 19
 display_num 0
@@ -34,3 +35,4 @@ pin_off 4
 mqtt_connect "broker.hivemq.com"
 mqtt_pub "bos/vending/sale" "SUCCESS"
 display_num 1
+```
