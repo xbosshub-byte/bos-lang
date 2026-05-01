@@ -57,7 +57,6 @@ class BOSInterpreter:
     def execute(self, tokens):
         i = 0
         while i < len(tokens):
-            if i >= len(tokens): break
             kind, value = tokens[i]
 
             # --- [Basic Logic] ---
@@ -68,15 +67,15 @@ class BOSInterpreter:
                 else:
                     self.env[value] = self._get_val(tokens[i+2])
                     i += 3
-            elif kind == 'PRINT':
+            elif kind == 'PRINT' and i + 1 < len(tokens):
                 print(f"[BOS]: {self._get_val(tokens[i+1])}")
                 i += 2
-            elif kind == 'DELAY':
+            elif kind == 'DELAY' and i + 1 < len(tokens):
                 time.sleep(self._get_val(tokens[i+1]) / 1000)
                 i += 2
 
             # --- [User Input (POS & Vending)] ---
-            elif kind == 'INPUT':
+            elif kind == 'INPUT' and i + 2 < len(tokens):
                 var_name = tokens[i+1][1]
                 prompt = self._get_val(tokens[i+2])
                 if HW_MODE in ("MOCK", "RPI"):
@@ -88,7 +87,7 @@ class BOSInterpreter:
                     self.env[var_name] = 1 # โหมดจำลองสำหรับบอร์ดที่ไม่มีคีย์บอร์ด
                 i += 3
                 
-            elif kind == 'WAIT_BTN':
+            elif kind == 'WAIT_BTN' and i + 2 < len(tokens):
                 pin = self._get_val(tokens[i+1])
                 var_name = tokens[i+2][1]
                 print(f"[HARDWARE]: กรุณากดปุ่มที่ Pin {pin}...")
@@ -107,14 +106,14 @@ class BOSInterpreter:
                 i += 3
 
             # --- [Network & MQTT] ---
-            elif kind == 'WIFI_CONNECT':
+            elif kind == 'WIFI_CONNECT' and i + 2 < len(tokens):
                 ssid, pwd = self._get_val(tokens[i+1]), self._get_val(tokens[i+2])
                 if NET_MODE == "MICROPYTHON":
                     w = network.WLAN(network.STA_IF); w.active(True); w.connect(ssid, pwd)
                     while not w.isconnected(): pass
                 print(f"[WIFI]: Connected to {ssid}")
                 i += 3
-            elif kind == 'MQTT_CONNECT':
+            elif kind == 'MQTT_CONNECT' and i + 1 < len(tokens):
                 broker = self._get_val(tokens[i+1])
                 cid = self.env.get('machine_id', 'BOS_DEV')
                 if NET_MODE == "PAHO":
@@ -123,7 +122,7 @@ class BOSInterpreter:
                     self.mqtt = MQTTClient(cid, broker); self.mqtt.connect()
                 print(f"[MQTT]: Connected to {broker}")
                 i += 2
-            elif kind == 'MQTT_PUB':
+            elif kind == 'MQTT_PUB' and i + 2 < len(tokens):
                 t, m = self._get_val(tokens[i+1]), str(self._get_val(tokens[i+2]))
                 if self.mqtt:
                     if NET_MODE == "PAHO": self.mqtt.publish(t, m)
@@ -131,7 +130,7 @@ class BOSInterpreter:
                 i += 3
 
             # --- [TM1637 Display Control] ---
-            elif kind == 'DISPLAY_INIT':
+            elif kind == 'DISPLAY_INIT' and i + 2 < len(tokens):
                 clk, dio = self._get_val(tokens[i+1]), self._get_val(tokens[i+2])
                 if HW_MODE == "MICROPYTHON":
                     import tm1637 
@@ -140,7 +139,7 @@ class BOSInterpreter:
                     self.display = rpi_tm1637.TM1637(clk=clk, dio=dio)
                 print(f"[DISPLAY]: Initialized on CLK:{clk} DIO:{dio}")
                 i += 3
-            elif kind == 'DISPLAY_NUM':
+            elif kind == 'DISPLAY_NUM' and i + 1 < len(tokens):
                 val = self._get_val(tokens[i+1])
                 if self.display:
                     if HW_MODE == "MICROPYTHON": self.display.number(int(val))
@@ -148,11 +147,11 @@ class BOSInterpreter:
                 i += 2
 
             # --- [Hardware IO] ---
-            elif kind == 'READ_SENSOR':
+            elif kind == 'READ_SENSOR' and i + 2 < len(tokens):
                 v, p = tokens[i+1][1], self._get_val(tokens[i+2])
                 self.env[v] = ADC(Pin(p)).read_u16() if HW_MODE == "MICROPYTHON" else random.randint(10, 50)
                 i += 3
-            elif kind in ('PIN_ON', 'PIN_OFF'):
+            elif kind in ('PIN_ON', 'PIN_OFF') and i + 1 < len(tokens):
                 p, s = self._get_val(tokens[i+1]), (1 if kind == 'PIN_ON' else 0)
                 if HW_MODE == "MICROPYTHON": Pin(p, Pin.OUT).value(s)
                 elif HW_MODE == "RPI": 
@@ -160,12 +159,17 @@ class BOSInterpreter:
                 i += 2
 
             # --- [Control Flow] ---
-            elif kind in ('IF', 'WHILE'):
+            elif kind in ('IF', 'WHILE') and i + 3 < len(tokens):
                 start = i
                 var, op, target = tokens[i+1][1], tokens[i+2][0], int(tokens[i+3][1])
-                i += 4; if tokens[i][0] == 'LBRACE': i += 1
+                
+                i += 4
+                if i < len(tokens) and tokens[i][0] == 'LBRACE': 
+                    i += 1
+                    
                 curr = self.env.get(var, 0)
                 cond = (curr > target if op == 'GT' else curr < target if op == 'LT' else curr == target)
+                
                 if cond:
                     if kind == 'WHILE': self.loop_stack.append(start)
                 else:
@@ -177,7 +181,8 @@ class BOSInterpreter:
             elif kind == 'RBRACE':
                 if self.loop_stack: i = self.loop_stack.pop()
                 else: i += 1
-            else: i += 1
+            else: 
+                i += 1
 
 # ==========================================
 # 3. Lexer & Main
@@ -203,10 +208,15 @@ def main():
         print("BOS Pro v2.5 (POS & Vending Input Edition)")
         print("วิธีใช้: bos <file.bos>")
         return
+        
     try:
         with open(sys.argv[1], 'r', encoding='utf-8') as f:
-            BOSInterpreter().execute(BOSLexer(f.read()).tokens)
+            interpreter = BOSInterpreter()
+            lexer = BOSLexer(f.read())
+            interpreter.execute(lexer.tokens)
+    except FileNotFoundError:
+        print(f"[ERROR]: ไม่พบไฟล์ '{sys.argv[1]}' โปรดตรวจสอบชื่อไฟล์อีกครั้ง")
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"[ERROR]: เกิดข้อผิดพลาดในระบบประมวลผล - {e}")
 
 if __name__ == '__main__': main()
